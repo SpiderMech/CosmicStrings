@@ -1,0 +1,900 @@
+﻿<html>
+	<head>
+		<title>CM20219 – Coursework 2 – WebGL</title>
+        <meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body { margin: 0; overflow: hidden; }
+			canvas { width: 100%; height: 100%; }
+		</style>
+	</head>
+	<body>
+		<script src="three.js"></script>
+        <script src="OBJloader.js"></script>
+		<script>
+            "use strict"; // https://stackoverflow.com/q/1335851/72470
+
+            // ----------Point class for tracking mouse position---------- //
+            class Point
+            {
+                constructor(x = 0, y = 0){
+
+                    this.x = x; // x coordinate
+                    this.y = y; // y coordiante
+
+                }
+
+                clone()
+                {
+                    return new Point(this.x, this.y);
+                }
+
+                set(x, y)
+                {
+                    this.x = x;
+                    this.y = y;
+                }
+
+                get zero()
+                {
+                    return new Point();
+                }
+            }
+
+            // ----------Input manager----------------------------------- //
+            class InputManager
+            {
+                constructor(element)
+                {
+                    var _this = this;
+
+                    /**
+                     * Mapping for mouse buttons
+                     * left for left button; middle for middle button; right for right button
+                     */
+                    this.mouseButtons = {
+                        left:"0", 
+                        middle:"1", 
+                        right:"2"
+                    };
+
+                    /**
+                     * Mapping for key buttons
+                     */
+                    this.keyButtons = {
+                        D:"68", // d = translate camera right
+                        A:"65", // a = translate camera left
+                        W:"87", // w = translate camera up
+                        S:"83", // s = translate camera down
+                        Q:"81", // q = reset camera to inital position
+                    };
+
+                    // this.resetMouse();
+                    this.mousePos = new Point();        // Mouse position
+                    this.mousePrevPos = new Point();    // Mouse position of previous frame
+                    this.mouseState = {};               // Mouse button clicked in current frame
+                    this.mousePrevState = {};           // Mouse button clicked in previous frame
+                    this.mouseWheel = 0;                // Number of scrolls on mouse wheel
+                    this.keyState = {};                 // Key buttons clicked
+
+                    /**
+                     * Add event listeners and call back functions
+                     */
+                    element.addEventListener('mousemove', function(e){
+                        _this.mousePos.x = e.x;
+                        _this.mousePos.y = e.y;
+                    });
+
+                    element.addEventListener('mousedown', function(e){
+                        _this.mouseState[e.button] = true;
+                    });
+
+                    element.addEventListener('mouseup', function(e){
+                        _this.mouseState[e.button] = false;
+                    });
+
+                    document.addEventListener('keydown', function(e){
+                        _this.keyState[e.keyCode] = true;
+                        _this.keyPressed = e.keyCode;
+                    });
+
+                    document.addEventListener('keyup', function(e){
+                        _this.keyState[e.keyCode] = false;
+                    });
+
+                    document.addEventListener('wheel', function(e){
+                        _this.mouseWheel = e.deltaY;
+                    })
+                }
+
+                /**
+                 * Get change in mouse direction
+                 */
+                get mouseDelta()
+                {
+                    if(!this.mousePrevPos){
+                        return Point.zero();
+                    }
+                    return new Point(this.mousePos.x - this.mousePrevPos.x, this.mousePos.y - this.mousePrevPos.y);
+                }
+
+                /**
+                 * Whether any of the buttons of the mouse is pressed down
+                 */
+                isMouseDown(button = 0)
+                {
+                    if (button === undefined) throw new Error("Undefined mouse button");
+                    return this.mouseState[button];
+                }
+
+                /**
+                 * Whether any of the keys on the keyboard is pressed down
+                 */
+                isKeyDown(key)
+                {
+                    if (key === undefined) throw new Error("Undefiend key button");
+                    return this.keyState[key];
+                }
+
+                /**
+                 * Update previous mouse position and state
+                 * Reset mouse wheel
+                 * To be called at the end of every frame
+                 */
+                endFrame(){
+                    this.mousePrevPos = this.mousePos.clone();
+                    this.mousePrevState = {};
+                    this.mousePrevState = Object.assign({}, this.mouseState);
+                    this.mouseWheel = 0;
+                }
+
+            }
+
+            // ----------Camera controls---------------------------------- //
+            class Controls
+            {
+                constructor(camera)
+                {
+                    this.camera = camera;
+
+                    this.newSpherical = new THREE.Spherical();         // New Spherical coordiantes at the end of frame
+                    this.currSpherical = new THREE.Spherical();        // Current spherical coordinates
+
+                    this.offset = new THREE.Vector3();                 // Current offset of camera position
+                    this.newOffset = new THREE.Vector3();              // New offset of camera position
+
+                    this.lookAt = new THREE.Vector3();                 // Current camera look at
+                    this.newLookAt = new THREE.Vector3();              // New camera look at
+
+                    this.position = camera.position;
+
+                    this.newSpherical.setFromVector3(this.position);   // Camera's initial position is current position
+
+                    this.MINDISTANCE = 0;                              // Minimum distance from mesh
+                }
+                
+                /**
+                 * Get world direction (look at) of camera
+                 */
+                get worldDirection()
+                {
+                    var direction = new THREE.Vector3();
+                    this.camera.getWorldDirection(direction);
+                    return direction;
+                }
+
+                /**
+                 * Rotate camera along the latitudinal direction
+                 */
+                rotateHorizontally(angle)
+                {
+                    this.newSpherical.theta += angle;
+                }
+
+                /**
+                 * Rotate camera along longitudinal direction
+                 */
+                rotateVertically(angle)
+                {
+                    this.newSpherical.phi += angle;
+                }
+
+                /**
+                 * Translate camera horizontally along its local x axis
+                 */
+                moveHorizontal(delta)
+                {
+                    var vec = this.worldDirection;                              // Get current look at of camera
+                    vec.y = 0;                                                  // Set y axis (longitudinal) to zero
+                    vec.normalize().multiplyScalar(delta);
+                    vec.applyAxisAngle(new THREE.Vector3(0,1,0), Math.PI/2);    // Rotate about y axis by pi/2 radians to create new offset
+                    this.newOffset.add(vec);
+                }
+
+                /**
+                 * Translate camera vertically along its local y axis
+                 */
+                moveVertical(delta)
+                {
+                    var spherical = new THREE.Spherical();                      
+                    spherical.setFromVector3(this.worldDirection);              // Get current look at and set it as spherical coordinate
+                    spherical.phi += Math.PI / 2;                               // Rotate about x axis by pi/2 radians to create new offset
+                    var vec = new THREE.Vector3().setFromSpherical(spherical).normalize().multiplyScalar(delta);
+                    this.newOffset.add(vec);
+                }
+
+                /**
+                 * Translate camera forwards or backwards along its local z axis
+                 */
+                zoom(delta)
+                {
+                    this.newSpherical.radius += delta;                          // Change new spherical coordinate's radius
+                    if (this.newSpherical.radius < this.MINDISTANCE)
+                    {
+                        this.newSpherical.radius = this.MINDISTANCE;
+                    }
+                }
+
+                resetCamera()
+                {
+                    this.newSpherical.setFromVector3(new THREE.Vector3(3,4,5));
+                    this.newOffset = new THREE.Vector3();
+                }
+
+                /**
+                 * Update camera
+                 * To be called at every animation frame
+                 * Translation speed: 10 units per second
+                 */
+                update(input)
+                {
+                    if(input)
+                    {
+                        var dt = input.deltaTime;
+
+                        var rh = input.rotateHorizontally || 0;  // If rotate horizontally value not nil
+                        if (rh !== 0){
+                            this.rotateHorizontally(rh * dt);
+                        } 
+                        var rv = input.rotateVertically || 0;    // If rotate vertically value not nil
+                        if (rv !== 0){
+                            this.rotateVertically(rv * dt);
+                        }
+
+                        if (input.mR)                            // If move right command received
+                        {
+                            this.moveHorizontal(-10 * dt);
+                        }
+
+                        if (input.mL)                            // If move left command received
+                        {
+                            this.moveHorizontal(10 * dt);        
+                        }
+
+                        if (input.mU)                            // If move up command received
+                        {
+                            this.moveVertical(-10 * dt);
+                        }
+
+                        if (input.mD)                            // If move down command received
+                        {
+                            this.moveVertical(10 * dt);
+                        }
+
+                        var zoom = input.zoom || 0;              // If zoom value not nil
+                        if (zoom !== 0){
+                            this.zoom(zoom * dt);
+                        }
+
+                        if (input.rC){
+                            this.resetCamera();                  // If reset camera command received
+                        }
+
+                    }
+
+                    // Update rotation (current spherical coord angles)
+                    this.currSpherical.theta = this.newSpherical.theta;
+                    this.currSpherical.phi = this.newSpherical.phi;
+
+                    // Update position
+                    this.currSpherical.radius = this.newSpherical.radius;
+                    this.offset = this.newOffset;
+
+                    // Update camera position and rotation
+                    this.currSpherical.makeSafe();
+                    this.newSpherical.makeSafe();
+                    this.camera.position.setFromSpherical(this.currSpherical).add(this.offset);
+
+                    // Update camera look at with offset
+                    this.camera.lookAt(this.lookAt.clone().add(this.offset));
+
+                }
+            }
+
+
+            // ----------Init scene and animate #1------------------------- //
+            var camera, scene, renderer, mesh, points, input, controls, prevTime, bunny, wireframe, textureLoader, defaultMaterial;
+            var isPaused = true;    // Whether animation is paused
+            var bunnyOrCube = 'c';  // Bunny mode or cube mode
+            var rotDir = 'x';       // Rotation mode
+
+            // Initialise the scene, and draw it for the first time.
+            init();
+			animate();
+
+            // Listen for keyboard events, to react to them.
+            document.addEventListener('keydown', handleKeyDown);
+
+            function init()
+            {
+                scene = new THREE.Scene();
+
+                // Camera set up
+                camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+                camera.position.set(3, 4, 5);
+                camera.lookAt(new THREE.Vector3(0, 0, 0));
+
+                // Grid helper set up
+                scene.add(new THREE.GridHelper(10, 20, 0xffffff));
+
+                // Input manager set up
+                input = new InputManager(window);
+
+                // Camera controls set up
+                controls = new Controls(camera);
+
+                // Cube set up
+                var geometry = new THREE.BoxGeometry(2,2,2);
+                textureLoader = new THREE.TextureLoader();
+                defaultMaterial = createMaterial();
+                mesh = new THREE.Mesh(geometry, defaultMaterial);
+                scene.add(mesh);
+
+                // Axis helper set up
+                const axesHelper = new THREE.AxesHelper(5);
+                scene.add(axesHelper);
+
+                // Basic ambient lighting and point light.
+                scene.add(new THREE.AmbientLight(0xffffff));
+
+                // Directional light set up
+                var light = new THREE.DirectionalLight(0x777777, 2);
+                light.position.set(-3, 4, 3);
+                light.lookAt(new THREE.Vector3(0,0,0));
+                scene.add(light);
+                
+                //Load stanford bunny
+                var objLoader = new THREE.OBJLoader();
+                objLoader.load('bunny-5000.obj', function(object){
+                    object.traverse(function (child){
+                        if (child instanceof THREE.Mesh){
+                            bunny = child;
+                            bunny.material = new THREE.MeshPhongMaterial({
+                                color: 0x343434,
+                            });
+                            bunny.geometry.center();
+                        }
+                    })
+                });
+
+                // Load Points for vertex mode
+                const pointMaterial = new THREE.PointsMaterial({color:0x0000ff, size:0.1, transparent: true, opacity: 0.0});
+                points = new THREE.Points(mesh.geometry, pointMaterial);
+                mesh.add(points);
+
+                // Set up the Web GL renderer.
+                renderer = new THREE.WebGLRenderer({ antialias: true });
+				renderer.setPixelRatio(window.devicePixelRatio); // HiDPI/retina rendering
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                document.body.appendChild(renderer.domElement);
+
+                // Handle resizing of the browser window.
+				window.addEventListener('resize', handleResize, false);
+            }
+
+            // Animation loop function. This function is called whenever an update is required.
+			var myReq;
+
+            function animate()
+            {
+                myReq = requestAnimationFrame(animate);
+
+                // Decide rotational axis
+                if (!isPaused){
+
+                    switch (rotDir){
+
+                        case 'x':
+                            mesh.rotation.x += 0.01;
+                            break;
+
+                        case 'y':
+                            mesh.rotation.y += 0.01;
+                            break;
+
+                        case 'z':
+                            mesh.rotation.z += 0.01;
+                            break;
+                    }
+
+                }
+                
+                const timeNow = (new Date()).getTime();
+                const deltaTime = (timeNow - prevTime) / 1000.0; // Get time elapsed in seconds
+                prevTime = timeNow;                              // Update previous time
+
+                // Get camera rotation input
+                var rotateCamera = input.isMouseDown(input.mouseButtons.left);
+                var mouseDelta = input.mouseDelta;
+
+                // Get camera translation input
+                var mR = input.isKeyDown(input.keyButtons.D); // Whether to move right
+                var mL = input.isKeyDown(input.keyButtons.A); // Whether to move left
+                var mU = input.isKeyDown(input.keyButtons.W); // Whether to move up
+                var mD = input.isKeyDown(input.keyButtons.S); // Whether to move down
+                var zoom = input.mouseWheel;
+
+                // Get camera reset
+                var resetCamera = input.isKeyDown(input.keyButtons.Q);
+
+                // Update camera
+                controls.update({
+                    deltaTime: deltaTime, 
+                    rotateHorizontally: rotateCamera ? -mouseDelta.x : 0,
+                    rotateVertically: rotateCamera ? -mouseDelta.y : 0,
+                    mR: mR,
+                    mL: mL,
+                    mU: mU,
+                    mD: mD,
+                    zoom: zoom,
+                    rC: resetCamera,
+
+                });
+
+                // Render the current scene to the screen.
+                renderer.render(scene, camera); 
+
+                // Reset and update mouse input
+                input.endFrame();
+			}
+
+
+            // ----------Init scene and animate #2------------------------- //
+            let camera2, scene2, renderer2, parameters, mainCube, bulbLight;
+            let mouseX = 0, mouseY = 0; // Mouse coordinates
+            const materials = [];
+
+            /**
+             * Initialise the cool scene
+             */
+            function somethingCool()
+            {
+                document.body.removeChild(renderer.domElement);     // Remove old renderer from document
+
+                // Set up new camera
+                camera2 = new THREE.PerspectiveCamera(75, window.innerWidth/ window.innerHeight, 1, 2000);
+                camera2.position.z = 1000;
+
+                // Set up new scene
+                scene2 = new THREE.Scene();
+
+                // Set up fog
+                scene2.fog = new THREE.FogExp2(0x000000, 0.0008);
+
+
+                // Set up stars
+                const vertices = [];                            // Positions of stars
+                const sprite = textureLoader.load('star.png');  // Load star texture
+
+                for (let i = 0; i< 5000; i++){
+
+                    const x = Math.random() * 2000 - 1000;
+                    const y = Math.random() * 2000 - 1000;
+                    const z = Math.random() * 2000 - 1000;
+
+                    vertices.push(x,y,z);
+
+                }
+
+                const geometry1 = new THREE.BufferGeometry();
+                geometry1.addAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));  // Add positions into geometry
+
+                // Set up parameters for stars
+                parameters = [
+                    [0xffffff, 20],
+                    [0xd6af36, 15],
+                    [0xa068b1, 10],
+                    [0x63b0e6, 8],
+                    [0xa22b47, 5]
+                ];
+
+                // Load stars into scene
+                for (let i = 0; i < parameters.length; i++){
+
+                    const color = parameters[i][0];
+                    const size = parameters[i][1];
+
+                    materials[i] = new THREE.PointsMaterial({
+                        size: size,
+                        transparent: true,
+                        opacity: 0.9,
+                        color: color,
+                        map: sprite,
+                        blending: THREE.AdditiveBlending,
+                        depthTest: false,
+                    });
+
+                    const stars = new THREE.Points(geometry1, materials[i]);
+
+                    scene2.add(stars);
+                }
+
+                /**
+                 * Set up cosmic strings
+                 * Set up main cube mesh
+                 */
+                const geometry2 = new THREE.BoxBufferGeometry(20,20,20);
+
+                const material2 = new THREE.MeshPhongMaterial({
+                    color: 0xe60005,
+                    specular: 0x00ff11,
+                    shininess: 70,
+                });
+
+                mainCube = new THREE.Mesh(geometry2, material2);
+                mainCube.position.z = 800;
+                scene2.add(mainCube);
+
+                // Add children cubes to main cube
+                let childCube, parentCube = mainCube;
+
+                // y direction
+                for (let j = 0; j<150; j++){
+                    childCube = new THREE.Mesh(geometry2, material2);
+                    childCube.position.y = 5;
+
+                    parentCube.add(childCube);
+                    parentCube = childCube;
+                }
+
+                parentCube = mainCube;
+
+                for (let j = 0; j<150; j++){
+                    childCube = new THREE.Mesh(geometry2, material2);
+                    childCube.position.y = -5;
+
+                    parentCube.add(childCube);
+                    parentCube = childCube;
+                }
+
+                // x direction
+                parentCube = mainCube;
+
+                for (let j = 0; j<150; j++){
+                    childCube = new THREE.Mesh(geometry2, material2);
+                    childCube.position.x = 5;
+
+                    parentCube.add(childCube);
+                    parentCube = childCube;
+                }
+
+                parentCube = mainCube;
+
+                for (let j = 0; j<150; j++){
+                    childCube = new THREE.Mesh(geometry2, material2);
+                    childCube.position.x = -5;
+
+                    parentCube.add(childCube);
+                    parentCube = childCube;
+                }
+
+                // z direction
+                parentCube = mainCube;
+
+                for (let j = 0; j<150; j++){
+                    childCube = new THREE.Mesh(geometry2, material2);
+                    childCube.position.z = 5;
+
+                    parentCube.add(childCube);
+                    parentCube = childCube;
+                }
+
+                parentCube = mainCube;
+
+                for (let j = 0; j<150; j++){
+                    childCube = new THREE.Mesh(geometry2, material2);
+                    childCube.position.z = -5;
+
+                    parentCube.add(childCube);
+                    parentCube = childCube;
+                }
+
+                // Set up point light
+                bulbLight = new THREE.PointLight(0xffffff, 1, 100, 2);
+                
+                // Set up a bulb light mesh
+                const bulbGeometry = new THREE.SphereBufferGeometry(2, 16, 8);
+                const bulbMat = new THREE.MeshStandardMaterial({
+                    emissive: 0xffffee,
+                    emissiveIntensity: bulbLight.intensity / Math.pow(0.02, 2.0),
+                    color:0x000000,
+                });
+
+                // Add bulb light mesh to point light
+                bulbLight.add(new THREE.Mesh(bulbGeometry, bulbMat));
+                bulbLight.castShadow = true;
+                bulbLight.power = 100000.0;
+
+                scene2.add(bulbLight);
+
+                // Add listender to pointer movement
+                document.addEventListener('pointermove', function(e){
+                    if (e.isPrimary === false) return;
+
+                    mouseX = e.x - window.innerWidth /2;
+                    mouseY = e.y - window.innerHeight/2;
+                }, false);
+
+                // set up renderer 
+                renderer2 = new THREE.WebGLRenderer();
+                renderer2.setPixelRatio( window.devicePixelRatio );
+                renderer2.setSize( window.innerWidth, window.innerHeight );
+                renderer2.shadowMap.enabled = true;
+                renderer2.physicallyCorrectLights = true;
+
+                document.body.appendChild( renderer2.domElement );
+            }
+
+            /**
+             * Cool scene rendering function
+             */
+            var myReq2;
+
+            function renderSomethingCool(){
+
+                myReq2 = requestAnimationFrame(renderSomethingCool);
+
+                var time = Date.now() * 0.00005;
+
+                // Change camera2 position depending on mouse position
+                camera2.position.x += (mouseX - camera2.position.x - 1) * 0.05;
+                camera2.position.y += (- mouseY - camera2.position.y - 1) * 0.05;
+
+                // Change bulbLight position depending on mouse position
+                bulbLight.position.z = 850;
+                bulbLight.position.x += (mouseX - bulbLight.position.x) * 0.09;
+                bulbLight.position.y += (- mouseY - bulbLight.position.y) * 0.09;
+
+                // Set camera2 look at
+                camera2.lookAt(scene2.position);
+
+                // Rotate stars
+                for (let i = 0; i< scene2.children.length; i++){
+                    const obj = scene2.children[i];
+                    if (obj instanceof THREE.Points){
+                        obj.rotation.z = time * (i < 4 ? i+1 : -(i+1));
+                    }
+                }
+
+                // Rotate cosmic string
+                time = Date.now() * 0.001 + 10000;
+
+                var rx = Math.sin( time * 0.7 ) * 0.2;
+                var ry = Math.sin( time * 0.3 ) * 0.1;
+                var rz = Math.sin( time * 0.2 ) * 0.1;
+
+                mainCube.traverse(function(object){
+                    object.rotation.x = rx;
+                    object.rotation.y = ry;
+                    object.rotation.z = rz;
+                });
+
+                renderer2.render(scene2, camera2);
+            }
+
+            // ----------Helper functions & Event handlers----------------- //
+
+            // Handle resizing of the browser window.
+            function handleResize()
+            {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                prevTime = (new Date()).getTime();
+            }
+
+            // Handle keyboard presses.
+            function handleKeyDown(event)
+            {
+                switch (event.keyCode)
+                {
+                    // Render modes.
+                    case 70: // f = face
+                        mesh.remove(points);
+
+                        if (bunnyOrCube == 'c'){                                                     // If cube mode
+
+                            mesh.material = defaultMaterial;
+
+                        } else {
+
+                            mesh.material = new THREE.MeshPhongMaterial({                            
+                                color: 0x343434,
+                            });
+
+                        }
+                        break;
+
+                    case 69: // e = edge
+                        mesh.remove(points);
+
+                        mesh.material = new THREE.MeshBasicMaterial({color:0xff0000, wireframe:true});
+                        break;
+
+                    case 86: // v = vertex
+                        if (bunnyOrCube == 'b'){                                                      // If bunny mode
+
+                            points.geometry = bunny.geometry;                                         // Set points geometry to bunny's geometry
+                            points.material.size = 0.03;                                              // Set points size to smaller
+
+                        } else {                                                                      // If cube mode
+
+                            points.geometry = new THREE.BoxGeometry(2,2,2);                           // Set points geometry to box geometry
+                            points.material.size = 0.1;                                               // Set points size to larger
+
+                        }
+
+                        mesh.material = new THREE.MeshBasicMaterial({transparent:true, opacity:0.0}); // Make mesh transparent
+                        points.material.transparent = false;                                          // Make points visible
+                        mesh.add(points);
+                        break;
+
+                    // Rotation direction
+                    case 88: // x = rotation about x axis
+                        rotDir = 'x';
+                        start();
+                        break;
+
+                    case 89: // y = rotation about y axis
+                        rotDir = 'y';
+                        start();
+                        break;
+
+                    case 90: // z = rotation about z axis
+                        rotDir = 'z';
+                        start();
+                        break;
+
+                    // Animation control
+                    case 32: // space = play/pause
+                        isPaused = !isPaused;
+
+                        if (!isPaused){
+                            animate();
+                        } else {
+                            cancelAnimationFrame(myReq); // If paused cancel animation frame
+                        }
+
+                        break; 
+
+                    case 82: // r = reset cube
+                        mesh.rotation.set(0,0,0);
+                        rotDir = 'x';
+                        break; 
+
+                    case 66: // b = bunny
+                        mesh.remove(points);
+
+                        isPaused = !isPaused;
+                        cancelAnimationFrame(myReq);
+
+                        if (bunnyOrCube == 'b'){
+
+                            loadCube();
+                            bunnyOrCube = 'c';
+
+                        } else {
+
+                            bunnyOrCube = 'b';
+                            loadStanfordBunny();
+
+                        }
+
+                        isPaused = !isPaused;
+                        animate();
+
+                        break;
+
+                    // Render something special
+                    case 48: // 0 = something cool
+                        cancelAnimationFrame(myReq);
+                        somethingCool();
+                        renderSomethingCool();
+                        break;
+                }
+            }
+
+            /**
+             * Create texture and material for cube mesh
+             */
+            function createMaterial()
+            {
+                var materials = [
+                    new THREE.MeshPhongMaterial({
+                        map: textureLoader.load('1.png'),
+                        shininess: 20,
+                        specular: 0xe63d3d,
+                    }),
+                    new THREE.MeshPhongMaterial({
+                        map: textureLoader.load('2.png'),
+                        shininess: 20,
+                        specular: 0xffde59,
+                    }),
+                    new THREE.MeshPhongMaterial({
+                        map: textureLoader.load('3.png'),
+                        shininess: 20,
+                        specular: 0x6bbd39,
+                    }),
+                    new THREE.MeshPhongMaterial({
+                        map: textureLoader.load('4.png'),
+                        shininess: 20,
+                        specular: 0x004aad,
+                    }),
+                    new THREE.MeshPhongMaterial({
+                        map: textureLoader.load('5.png'),
+                        shininess: 20,
+                        specular: 0xfee7ad,
+                    }),
+                    new THREE.MeshPhongMaterial({
+                        map: textureLoader.load('6.png'),
+                        shininess: 20,
+                        specular: 0xff914d,
+                    }),
+
+                ];
+                return materials;
+            }
+
+            /**
+             * Start animation if animation is currently paused
+             */
+            function start()
+            {
+                if (isPaused){
+                    isPaused = !isPaused;
+                    animate();
+                }
+            } 
+
+             /**
+             * Load Stanford bunny object as current mesh
+             */
+            function loadStanfordBunny()
+            {
+                mesh.geometry = bunny.geometry;     // Assign geometry
+                mesh.material = bunny.material;     // Assign material
+                mesh.scale.set(0.37, 0.37, 0.37);   // Assign scale
+
+                // Create wireframe to show bunny fits into box
+                wireframe = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), new THREE.MeshBasicMaterial({
+                    color: 0xffffff,
+                    wireframe:true,
+                }));
+                scene.add(wireframe);
+            }
+
+            /**
+             * Load cube as current mesh
+             */
+            function loadCube()
+            {
+                scene.remove(wireframe);
+                mesh.scale.set(1, 1, 1);
+                mesh.position.set(0,0,0);
+                mesh.geometry = new THREE.BoxGeometry(2,2,2);
+                mesh.material = defaultMaterial;
+            }
+
+		</script>
+	</body>
+</html>
